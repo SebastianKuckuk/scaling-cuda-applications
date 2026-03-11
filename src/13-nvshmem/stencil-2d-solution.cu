@@ -184,7 +184,7 @@ int main(int argc, char *argv[]) {
     // measurement
     checkCudaError(cudaDeviceSynchronize());
     nvshmem_barrier_all();
-    nvtxRangePush("Work");
+    nvtxRangePush("work");
     auto start = std::chrono::steady_clock::now();
 
     for (size_t i = 0; i < numItTimed; ++i)
