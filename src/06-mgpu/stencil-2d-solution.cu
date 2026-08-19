@@ -86,7 +86,7 @@ int main(int argc, char *argv[]) {
 
     // prefetch to GPU
     // CUDA 13 removed the int-device overload of cudaMemPrefetchAsync - the target is a cudaMemLocation now
-    cudaMemLocation cpuLocation{cudaMemLocationTypeHost, 0};
+    cudaMemLocation hostID{cudaMemLocationTypeHost, 0};
     for (int deviceIdx = 0; deviceIdx < numDevices; ++deviceIdx) {
         checkCudaError(cudaSetDevice(deviceIdx));
 
@@ -96,10 +96,10 @@ int main(int argc, char *argv[]) {
         auto endIdx = (patch.globalInnerEndY + 1) * globalNumCellsX;
         auto size = (endIdx - startIdx) * sizeof(double);
 
-        cudaMemLocation gpuLocation{cudaMemLocationTypeDevice, deviceIdx};    // one location per patch's device
+        cudaMemLocation deviceID{cudaMemLocationTypeDevice, deviceIdx};    // one location per patch's device
 
-        checkCudaError(cudaMemPrefetchAsync(u + startIdx, size, gpuLocation, 0));
-        checkCudaError(cudaMemPrefetchAsync(uNew + startIdx, size, gpuLocation, 0));
+        checkCudaError(cudaMemPrefetchAsync(u + startIdx, size, deviceID, 0));
+        checkCudaError(cudaMemPrefetchAsync(uNew + startIdx, size, deviceID, 0));
     }
 
     // define print and work
@@ -163,7 +163,7 @@ int main(int argc, char *argv[]) {
     // print stats and diagnostic result
     printStats(end - start, numItTimed, globalNumCellsX * globalNumCellsY, sizeof(double) + sizeof(double), 7);
 
-    checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), cpuLocation, 0));
+    checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), hostID, 0));
     auto totalTemperature = accumulateTemperature(u, globalNumCellsX, globalNumCellsY);
     std::cout << "  Total temperature is " << totalTemperature << std::endl;
 

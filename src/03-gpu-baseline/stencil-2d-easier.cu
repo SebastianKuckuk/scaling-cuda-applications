@@ -38,8 +38,8 @@ int main(int argc, char *argv[]) {
     checkCudaError(cudaGetDevice(&deviceId));
 
     // CUDA 13 removed the int-device overload of cudaMemPrefetchAsync - the target is a cudaMemLocation now
-    cudaMemLocation gpuLocation{cudaMemLocationTypeDevice, deviceId};
-    cudaMemLocation cpuLocation{cudaMemLocationTypeHost, 0};
+    cudaMemLocation deviceID{cudaMemLocationTypeDevice, deviceId};
+    cudaMemLocation hostID{cudaMemLocationTypeHost, 0};
     checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), TODO, 0));
     checkCudaError(cudaMemPrefetchAsync(uNew, globalNumCellsX * globalNumCellsY * sizeof(double), TODO, 0));
 
@@ -56,9 +56,9 @@ int main(int argc, char *argv[]) {
         if (idx.size() < 6) idx = std::string(6 - idx.size(), '0') + idx;
 
         // Note: this could be optimized - see the course 'Fundamentals of Accelerated Computing with Modern CUDA C++'
-        checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), cpuLocation, 0));
+        checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), hostID, 0));
         writeTemperatureNpy("../output/temperature_" + idx + ".npy", u, globalNumCellsX, globalNumCellsY);
-        checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), gpuLocation, 0));
+        checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), deviceID, 0));
     };
 
     // work function
@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
     // print stats and diagnostic result
     printStats(end - start, numItTimed, globalNumCellsX * globalNumCellsY, sizeof(double) + sizeof(double), 7);
 
-    checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), cpuLocation, 0));
+    checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), hostID, 0));
     auto totalTemperature = accumulateTemperature(u, globalNumCellsX, globalNumCellsY);
     std::cout << "  Total temperature is " << totalTemperature << std::endl;
 
