@@ -11,4 +11,5 @@ nvcc -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86
 nvcc -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -o ../build/09-overlap ../src/09-overlap/stencil-2d-solution.cu
 nvcc -ccbin=mpic++ -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -o ../build/11-mpi ../src/11-mpi/stencil-2d-solution.cu
 nvcc -ccbin=mpic++ -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -o ../build/12-overlap ../src/12-overlap/stencil-2d-solution.cu
-nvcc -ccbin=mpic++ -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -rdc=true -o ../build/13-nvshmem ../src/13-nvshmem/stencil-2d-solution.cu -lnvshmem_host -lnvshmem_device
+nvcc -ccbin=mpic++ -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -o ../build/13-nccl ../src/13-nccl/stencil-2d-solution.cu -lnccl
+nvcc -ccbin=mpic++ -O3 -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -rdc=true -I$NVSHMEM_ROOT/include -o ../build/14-nvshmem ../src/14-nvshmem/stencil-2d-solution.cu -lnvshmem_host -lnvshmem_device

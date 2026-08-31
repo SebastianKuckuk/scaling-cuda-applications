@@ -76,7 +76,7 @@ int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
 
     // initialize NVSHMEM
-    nvshmemx_init_attr_t attr;
+    nvshmemx_init_attr_t attr = NVSHMEMX_INIT_ATTR_INITIALIZER;
     MPI_Comm comm = MPI_COMM_WORLD;
     attr.mpi_comm = &comm;
     nvshmemx_init_attr(NVSHMEMX_INIT_WITH_MPI_COMM, &attr);
@@ -155,7 +155,7 @@ int main(int argc, char *argv[]) {
             nvshmem_barrier_all();
             if (pe == printPE)
                 writeTemperaturePatchNpy("../output/temperature_" + idx + ".npy",
-                    patch.localU,
+                    u,
                     globalNumCellsX, globalNumCellsY, patch.localNumCellsX, patch.localNumCellsY,
                     numPatches, pe);
         }

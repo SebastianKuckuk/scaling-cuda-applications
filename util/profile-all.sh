@@ -22,7 +22,7 @@ make_devlist () {
 
 single_only_bins="03-gpu-baseline 04-work-partitioning 05-streams"
 non_mpi_bins="06-mgpu 07-halos 07-halos-2 08-p2p 09-overlap"
-mpi_bins="11-mpi 12-overlap 13-nvshmem"
+mpi_bins="11-mpi 12-overlap 13-nccl 14-nvshmem"
 
 # Sweep GPU counts in powers of two
 gpus=1
