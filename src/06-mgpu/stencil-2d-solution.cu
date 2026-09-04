@@ -85,7 +85,6 @@ int main(int argc, char *argv[]) {
     initTemperature(u, uNew, globalNumCellsX, globalNumCellsY);
 
     // prefetch to GPU
-    // CUDA 13 removed the int-device overload of cudaMemPrefetchAsync - the target is a cudaMemLocation now
     cudaMemLocation hostID{cudaMemLocationTypeHost, 0};
     for (int deviceIdx = 0; deviceIdx < numDevices; ++deviceIdx) {
         checkCudaError(cudaSetDevice(deviceIdx));

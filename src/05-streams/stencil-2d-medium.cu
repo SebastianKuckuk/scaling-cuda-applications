@@ -91,8 +91,6 @@ int main(int argc, char *argv[]) {
     int deviceId = 0;
     checkCudaError(cudaGetDevice(&deviceId));
 
-    // CUDA 13 removed the int-device overload of cudaMemPrefetchAsync - the target is a cudaMemLocation now,
-    // and the stream moved behind a flags argument
     cudaMemLocation deviceID{cudaMemLocationTypeDevice, deviceId};
     cudaMemLocation hostID{cudaMemLocationTypeHost, 0};
     TODO: prefetch in streams
