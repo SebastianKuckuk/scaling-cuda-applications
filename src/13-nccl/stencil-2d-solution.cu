@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Rank " << rank << " using device " << deviceId << std::endl;
 
-	//  broadcast MPI rank and assign ncclID
+    // broadcast the NCCL unique ID
     ncclUniqueId ncclId;
     if (0 == rank)
         checkNcclError(ncclGetUniqueId(&ncclId));
@@ -157,6 +157,7 @@ int main(int argc, char *argv[]) {
         // all ranks copy data back to CPU in parallel
         checkCudaError(cudaMemcpy(patch.localU, patch.d_localU, patch.localSize, cudaMemcpyDeviceToHost));
 
+        // Note: brute-force full-synchronize approach for simplicity - optimize with point-to-point messages triggering next write
         for (int printRank = 0; printRank < numRanks; ++printRank) {
             MPI_Barrier(MPI_COMM_WORLD);    // make sure all ranks are in the same iteration
 
@@ -176,8 +177,12 @@ int main(int argc, char *argv[]) {
         stencil2D<<<ceilingDivide(patch.localNumCellsX - 2, 256), 256, 0, patch.haloStream>>>(
             patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, patch.localNumCellsY - 2, patch.localNumCellsY - 1, patch.localNumCellsX);
 
+        // start bulk compute
+        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
+            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
+
         // exchange halos
-		checkNcclError(ncclGroupStart());
+        checkNcclError(ncclGroupStart());
         if (rank > 0) {
             checkNcclError(ncclRecv(&patch.d_localUNew[0 * patch.localNumCellsX],
                 patch.localNumCellsX, ncclDouble, rank - 1, ncclComm, patch.haloStream));
@@ -191,10 +196,6 @@ int main(int argc, char *argv[]) {
                 patch.localNumCellsX, ncclDouble, rank + 1, ncclComm, patch.haloStream));
         }
         checkNcclError(ncclGroupEnd());
-
-        // start bulk compute
-        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
-            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
 
         // synchronize both streams
         checkCudaError(cudaStreamSynchronize(patch.haloStream));

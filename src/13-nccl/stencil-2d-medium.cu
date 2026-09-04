@@ -53,8 +53,6 @@ struct Patch {
     dim3 gridSize;
 
     // patch streams
-    // TODO: which streams does the NCCL version need? note that NCCL operations on a
-    //       single communicator issued from concurrent streams may deadlock
     TODO
 };
 
@@ -73,7 +71,6 @@ int main(int argc, char *argv[]) {
     parseCLA_2d(argc, argv, globalNumCellsX, globalNumCellsY, numItWarmUp, numItTimed, printInterval);
 
     // choose GPU
-    // Note: NCCL requires a distinct device per rank of a communicator
     int numDevicesPerNode = 0;
     checkCudaError(cudaGetDeviceCount(&numDevicesPerNode));
 
@@ -82,11 +79,7 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Rank " << rank << " using device " << deviceId << std::endl;
 
-    // initialize NCCL
-    // TODO: create a unique ID on one rank, distribute it to all ranks, and create a
-    //       communicator from it
-    //       - NCCL has no rendezvous of its own, so use MPI to distribute the ID
-    //       - the communicator binds to the current device, so this has to follow cudaSetDevice
+    // broadcast the NCCL unique ID and initialize the NCCL communicator
     TODO
 
     // initialize patches
@@ -128,7 +121,6 @@ int main(int argc, char *argv[]) {
     checkCudaError(cudaMallocHost(&patch.localU, patch.localSize));
 
     // allocate GPU
-    // Note: NCCL operates on ordinary device allocations - no symmetric heap required
     checkCudaError(cudaMalloc((void **)&patch.d_localU, patch.localSize));
     checkCudaError(cudaMalloc((void **)&patch.d_localUNew, patch.localSize));
 
@@ -171,24 +163,16 @@ int main(int argc, char *argv[]) {
 
     auto work = [&](size_t it) {
         // compute layers to be communicated
-        // TODO: compute the first and the last inner row, each on the stream that will
-        //       carry the matching send
         stencil2D<<<TODO>>>(TODO);
         stencil2D<<<TODO>>>(TODO);
 
         // start bulk compute
         stencil2D<<<TODO>>>(TODO);
 
-        // exchange halos
-        // TODO: exchange the halo layers with NCCL
-        //       - group the operations so that matching sends and receives are resolved
-        //         together instead of deadlocking on each other
-        //       - no host synchronization is needed before sending: why?
+        // exchange halos using NCCL send/recv communication
         TODO
 
-        // synchronize
-        // TODO: wait for both streams - note that these waits are only required because
-        //       the buffer swap below happens on the host
+        // synchronize streams
         TODO
 
         std::swap(patch.d_localU, patch.d_localUNew);
@@ -223,27 +207,30 @@ int main(int argc, char *argv[]) {
 
     auto rankTotalTemperature = accumulateTemperature(patch.localU, patch.localNumCellsX, patch.localNumCellsY);
     std::cout << "  Total temperature on rank " << rank << " is " << rankTotalTemperature << std::endl;
-    // reduce the total temperature across GPUs
-    // TODO: reduce rankTotalTemperature into totalTemperature on rank 0, using NCCL
-    //       instead of the MPI_Reduce of the previous version
-    //       - NCCL collectives operate on device buffers, so the value has to be staged
-    //         on the GPU first
-    //       - the reduction is stream-ordered, as every other NCCL operation
-    double totalTemperature = 0.0;
-    TODO
 
+    // reduce the total temperature across GPUs, unchanged from 12-overlap
+    double totalTemperature = 0.0;
+    MPI_Reduce(
+        &rankTotalTemperature,  // send buffer
+        &totalTemperature,      // receive buffer
+        1,                      // count
+        MPI_DOUBLE,             // datatype
+        MPI_SUM,                // operation
+        0,                      // root
+        MPI_COMM_WORLD);        // communicator
     if (0 == rank)
         std::cout << "  Total temperature is " << totalTemperature << std::endl;
 
-    // clean up
-    TODO    // destroy the streams
+    // clean up and destroy the streams
+    TODO
 
     checkCudaError(cudaFree(patch.d_localU));
     checkCudaError(cudaFree(patch.d_localUNew));
 
     checkCudaError(cudaFreeHost(patch.localU));
 
-    TODO    // destroy the NCCL communicator
+    // destroy the NCCL communicator
+    TODO
 
     MPI_Finalize();
 
