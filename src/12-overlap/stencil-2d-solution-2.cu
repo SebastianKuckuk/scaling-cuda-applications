@@ -271,17 +271,18 @@ int main(int argc, char *argv[]) {
     // accumulate the local temperature on the device
     // Note: a CUDA-aware MPI takes device pointers in collectives just as in the halo
     //       exchange above, so the field never has to be copied back to accumulate it
-    // Note: slot 0 holds this rank's contribution, slot 1 the global sum on the root
-    double *d_temperature;
-    checkCudaError(cudaMalloc((void **)&d_temperature, 2 * sizeof(double)));
-    checkCudaError(cudaMemsetAsync(d_temperature, 0, 2 * sizeof(double), patch.bulkStream));
+    double *d_localTemperature;
+    double *d_totalTemperature;
+    checkCudaError(cudaMalloc((void **)&d_localTemperature, sizeof(double)));
+    checkCudaError(cudaMalloc((void **)&d_totalTemperature, sizeof(double)));
+    checkCudaError(cudaMemsetAsync(d_localTemperature, 0, sizeof(double), patch.bulkStream));
 
     const size_t numInnerCells = (patch.localNumCellsX - 2) * (patch.localNumCellsY - 2);
     const int accumulateGridSize = static_cast<int>(std::max<size_t>(1, std::min<size_t>(
         1024, ceilingDivide(numInnerCells, accumulateBlockSize))));
 
     accumulateTemperature2D<<<accumulateGridSize, accumulateBlockSize, 0, patch.bulkStream>>>(
-        patch.d_localU, patch.localNumCellsX, patch.localNumCellsY, d_temperature);
+        patch.d_localU, patch.localNumCellsX, patch.localNumCellsY, d_localTemperature);
 
     // Note: unlike NCCL, MPI is not stream aware - the kernel producing the send buffer has
     //       to be waited for explicitly before the collective may read it
@@ -289,23 +290,24 @@ int main(int argc, char *argv[]) {
 
     // reduce the total temperature across GPUs
     MPI_Reduce(
-        d_temperature,          // send buffer, on the device
-        d_temperature + 1,      // receive buffer, on the device, only written on the root
+        d_localTemperature,     // send buffer, on the device
+        d_totalTemperature,     // receive buffer, on the device, only written on the root
         1,                      // count
         MPI_DOUBLE,             // datatype
         MPI_SUM,                // operation
         0,                      // root
         MPI_COMM_WORLD);        // communicator
 
-    // a single 16-byte transfer replaces the full-field copy back
-    double temperature[2] = { 0.0, 0.0 };
-    checkCudaError(cudaMemcpy(temperature, d_temperature, 2 * sizeof(double), cudaMemcpyDeviceToHost));
+    // a single 8-byte transfer replaces the full-field copy back
+    if (0 == rank) {
+        double temperature = 0.0;
+        checkCudaError(cudaMemcpy(&temperature, d_totalTemperature, sizeof(double), cudaMemcpyDeviceToHost));
 
-    std::cout << "  Total temperature on rank " << rank << " is " << temperature[0] << std::endl;
-    if (0 == rank)
-        std::cout << "  Total temperature is " << temperature[1] << std::endl;
+        std::cout << "  Total temperature is " << temperature << std::endl;
+    }
 
-    checkCudaError(cudaFree(d_temperature));
+    checkCudaError(cudaFree(d_localTemperature));
+    checkCudaError(cudaFree(d_totalTemperature));
 
     // clean up
     checkCudaError(cudaStreamDestroy(patch.topStream));

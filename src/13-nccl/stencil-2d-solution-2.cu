@@ -290,10 +290,9 @@ int main(int argc, char *argv[]) {
     // Note: NCCL collectives operate on device buffers - accumulating on the GPU keeps the
     //       reduction where the data already is, so neither the field nor a staging value
     //       has to cross the PCIe/ NVLink boundary before the collective
-    // Note: slot 0 holds this rank's contribution, slot 1 the global sum on the root
     double *d_temperature;
-    checkCudaError(cudaMalloc((void **)&d_temperature, 2 * sizeof(double)));
-    checkCudaError(cudaMemsetAsync(d_temperature, 0, 2 * sizeof(double), patch.bulkStream));
+    checkCudaError(cudaMalloc((void **)&d_temperature, sizeof(double)));
+    checkCudaError(cudaMemsetAsync(d_temperature, 0, sizeof(double), patch.bulkStream));
 
     const size_t numInnerCells = (patch.localNumCellsX - 2) * (patch.localNumCellsY - 2);
     const int accumulateGridSize = static_cast<int>(std::max<size_t>(1, std::min<size_t>(
@@ -302,12 +301,14 @@ int main(int argc, char *argv[]) {
     accumulateTemperature2D<<<accumulateGridSize, accumulateBlockSize, 0, patch.bulkStream>>>(
         patch.d_localU, patch.localNumCellsX, patch.localNumCellsY, d_temperature);
 
-    // reduce the total temperature across GPUs
+    // reduce the total temperature across GPUs, in place
     // Note: no host synchronization is needed before the collective - it is enqueued behind
     //       the kernel producing its send buffer, on the very same stream
+    // Note: NCCL reduces in place when the send and the receive buffer are the same
+    //       pointer, so a single element is enough
     checkNcclError(ncclReduce(
         d_temperature,          // send buffer
-        d_temperature + 1,      // receive buffer, only written on the root
+        d_temperature,          // receive buffer, in place, only written on the root
         1,                      // count
         ncclDouble,             // datatype
         ncclSum,                // operation
@@ -318,13 +319,13 @@ int main(int argc, char *argv[]) {
     // Note: as every NCCL operation, the reduction is stream-ordered
     checkCudaError(cudaStreamSynchronize(patch.bulkStream));
 
-    // a single 16-byte transfer replaces the full-field copy back
-    double temperature[2] = { 0.0, 0.0 };
-    checkCudaError(cudaMemcpy(temperature, d_temperature, 2 * sizeof(double), cudaMemcpyDeviceToHost));
+    // a single 8-byte transfer replaces the full-field copy back
+    if (0 == rank) {
+        double temperature = 0.0;
+        checkCudaError(cudaMemcpy(&temperature, d_temperature, sizeof(double), cudaMemcpyDeviceToHost));
 
-    std::cout << "  Total temperature on rank " << rank << " is " << temperature[0] << std::endl;
-    if (0 == rank)
-        std::cout << "  Total temperature is " << temperature[1] << std::endl;
+        std::cout << "  Total temperature is " << temperature << std::endl;
+    }
 
     checkCudaError(cudaFree(d_temperature));
 
