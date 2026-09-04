@@ -28,10 +28,6 @@ __global__ void stencil2D(const double *__restrict__ u, double *__restrict__ uNe
     }
 }
 
-
-// number of threads per block used for the temperature accumulation
-// Note: fixed at compile time because the block-level reduction below uses a
-//       statically sized shared-memory buffer
 constexpr int accumulateBlockSize = 256;
 
 
@@ -39,13 +35,9 @@ __global__ void accumulateTemperature2D(const double *__restrict__ u,
                                         size_t localNumCellsX, size_t localNumCellsY,
                                         double *__restrict__ acc) {
 
-    // sum the inner cells of this patch only - the surrounding ring is either a halo layer
-    // owned by the neighbouring patch or a global boundary, exactly like the host-side
-    // accumulateTemperature, so no cell is counted twice
     const size_t numInnerX = localNumCellsX - 2;
     const size_t numInnerCells = numInnerX * (localNumCellsY - 2);
 
-    // grid-stride loop - one partial sum per thread, independent of the field size
     double sum = 0.0;
     for (size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
          idx < numInnerCells;
@@ -56,7 +48,6 @@ __global__ void accumulateTemperature2D(const double *__restrict__ u,
         sum += u[i0 + i1 * localNumCellsX];
     }
 
-    // tree reduction inside the block
     __shared__ double blockSums[accumulateBlockSize];
     blockSums[threadIdx.x] = sum;
     __syncthreads();
@@ -67,8 +58,6 @@ __global__ void accumulateTemperature2D(const double *__restrict__ u,
         __syncthreads();
     }
 
-    // combine the per-block results
-    // Note: double atomics require sm_60 or newer
     if (0 == threadIdx.x)
         atomicAdd(acc, blockSums[0]);
 }
@@ -98,8 +87,6 @@ struct Patch {
     dim3 gridSize;
 
     // patch streams
-    // Note: both communicated layers share one stream - NCCL operations on a single
-    //       communicator issued from concurrent streams may deadlock.
     cudaStream_t haloStream;
     cudaStream_t bulkStream;
 };
@@ -119,7 +106,6 @@ int main(int argc, char *argv[]) {
     parseCLA_2d(argc, argv, globalNumCellsX, globalNumCellsY, numItWarmUp, numItTimed, printInterval);
 
     // choose GPU
-    // Note: NCCL requires a distinct device per rank of a communicator
     int numDevicesPerNode = 0;
     checkCudaError(cudaGetDeviceCount(&numDevicesPerNode));
 
@@ -128,15 +114,13 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Rank " << rank << " using device " << deviceId << std::endl;
 
-    // initialize NCCL
-    // Note: NCCL provides no launcher and no rendezvous of its own - the unique ID
-    //       has to be distributed out of band, here with MPI
+	//  broadcast MPI rank and assign ncclID
     ncclUniqueId ncclId;
     if (0 == rank)
         checkNcclError(ncclGetUniqueId(&ncclId));
     MPI_Bcast(&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    // Note: the communicator binds to the current device, so this has to follow cudaSetDevice
+    // initialize NCCL communicator
     ncclComm_t ncclComm;
     checkNcclError(ncclCommInitRank(&ncclComm, numRanks, ncclId, rank));
 
@@ -180,7 +164,6 @@ int main(int argc, char *argv[]) {
     checkCudaError(cudaMallocHost(&patch.localU, patch.localSize));
 
     // allocate GPU
-    // Note: NCCL operates on ordinary device allocations - no symmetric heap required
     checkCudaError(cudaMalloc((void **)&patch.d_localU, patch.localSize));
     checkCudaError(cudaMalloc((void **)&patch.d_localUNew, patch.localSize));
 
@@ -208,7 +191,6 @@ int main(int argc, char *argv[]) {
         // all ranks copy data back to CPU in parallel
         checkCudaError(cudaMemcpy(patch.localU, patch.d_localU, patch.localSize, cudaMemcpyDeviceToHost));
 
-        // Note: brute-force full-synchronize approach for simplicity - optimize with point-to-point messages triggering next write
         for (int printRank = 0; printRank < numRanks; ++printRank) {
             MPI_Barrier(MPI_COMM_WORLD);    // make sure all ranks are in the same iteration
 
@@ -228,16 +210,8 @@ int main(int argc, char *argv[]) {
         stencil2D<<<ceilingDivide(patch.localNumCellsX - 2, 256), 256, 0, patch.haloStream>>>(
             patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, patch.localNumCellsY - 2, patch.localNumCellsY - 1, patch.localNumCellsX);
 
-        // start bulk compute
-        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
-            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
-
         // exchange halos
-        // Note: no host synchronization is needed before sending - the send is enqueued
-        //       behind the kernel that produces the layer, on the very same stream
-        // Note: the group call allows the matching send/ receive pairs to be resolved
-        //       together instead of deadlocking on each other
-        checkNcclError(ncclGroupStart());
+		checkNcclError(ncclGroupStart());
         if (rank > 0) {
             checkNcclError(ncclRecv(&patch.d_localUNew[0 * patch.localNumCellsX],
                 patch.localNumCellsX, ncclDouble, rank - 1, ncclComm, patch.haloStream));
@@ -252,12 +226,14 @@ int main(int argc, char *argv[]) {
         }
         checkNcclError(ncclGroupEnd());
 
+        // start bulk compute
+        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
+            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
+
         // synchronize both streams
-        // Note: these waits are only required because the buffer swap below happens on
-        //       the host - they are not communication waits
         checkCudaError(cudaStreamSynchronize(patch.haloStream));
         checkCudaError(cudaStreamSynchronize(patch.bulkStream));
-
+        
         std::swap(patch.d_localU, patch.d_localUNew);
 
         if (printInterval > 0 && 0 == (it % printInterval))
@@ -287,9 +263,6 @@ int main(int argc, char *argv[]) {
         printStats(end - start, numItTimed, globalNumCellsX * globalNumCellsY, sizeof(double) + sizeof(double), 7);
 
     // accumulate the local temperature on the device
-    // Note: NCCL collectives operate on device buffers - accumulating on the GPU keeps the
-    //       reduction where the data already is, so neither the field nor a staging value
-    //       has to cross the PCIe/ NVLink boundary before the collective
     double *d_temperature;
     checkCudaError(cudaMalloc((void **)&d_temperature, sizeof(double)));
     checkCudaError(cudaMemsetAsync(d_temperature, 0, sizeof(double), patch.bulkStream));
@@ -302,10 +275,6 @@ int main(int argc, char *argv[]) {
         patch.d_localU, patch.localNumCellsX, patch.localNumCellsY, d_temperature);
 
     // reduce the total temperature across GPUs, in place
-    // Note: no host synchronization is needed before the collective - it is enqueued behind
-    //       the kernel producing its send buffer, on the very same stream
-    // Note: NCCL reduces in place when the send and the receive buffer are the same
-    //       pointer, so a single element is enough
     checkNcclError(ncclReduce(
         d_temperature,          // send buffer
         d_temperature,          // receive buffer, in place, only written on the root
@@ -316,10 +285,8 @@ int main(int argc, char *argv[]) {
         ncclComm,               // communicator
         patch.bulkStream));     // stream
 
-    // Note: as every NCCL operation, the reduction is stream-ordered
     checkCudaError(cudaStreamSynchronize(patch.bulkStream));
 
-    // a single 8-byte transfer replaces the full-field copy back
     if (0 == rank) {
         double temperature = 0.0;
         checkCudaError(cudaMemcpy(&temperature, d_temperature, sizeof(double), cudaMemcpyDeviceToHost));

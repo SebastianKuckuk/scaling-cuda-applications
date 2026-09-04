@@ -53,8 +53,6 @@ struct Patch {
     dim3 gridSize;
 
     // patch streams
-    // Note: both communicated layers share one stream - NCCL operations on a single
-    //       communicator issued from concurrent streams may deadlock.
     cudaStream_t haloStream;
     cudaStream_t bulkStream;
 };
@@ -74,7 +72,6 @@ int main(int argc, char *argv[]) {
     parseCLA_2d(argc, argv, globalNumCellsX, globalNumCellsY, numItWarmUp, numItTimed, printInterval);
 
     // choose GPU
-    // Note: NCCL requires a distinct device per rank of a communicator
     int numDevicesPerNode = 0;
     checkCudaError(cudaGetDeviceCount(&numDevicesPerNode));
 
@@ -83,15 +80,13 @@ int main(int argc, char *argv[]) {
 
     std::cout << "Rank " << rank << " using device " << deviceId << std::endl;
 
-    // initialize NCCL
-    // Note: NCCL provides no launcher and no rendezvous of its own - the unique ID
-    //       has to be distributed out of band, here with MPI
+	//  broadcast MPI rank and assign ncclID
     ncclUniqueId ncclId;
     if (0 == rank)
         checkNcclError(ncclGetUniqueId(&ncclId));
     MPI_Bcast(&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD);
 
-    // Note: the communicator binds to the current device, so this has to follow cudaSetDevice
+    // initialize NCCL communicator
     ncclComm_t ncclComm;
     checkNcclError(ncclCommInitRank(&ncclComm, numRanks, ncclId, rank));
 
@@ -135,7 +130,6 @@ int main(int argc, char *argv[]) {
     checkCudaError(cudaMallocHost(&patch.localU, patch.localSize));
 
     // allocate GPU
-    // Note: NCCL operates on ordinary device allocations - no symmetric heap required
     checkCudaError(cudaMalloc((void **)&patch.d_localU, patch.localSize));
     checkCudaError(cudaMalloc((void **)&patch.d_localUNew, patch.localSize));
 
@@ -163,7 +157,6 @@ int main(int argc, char *argv[]) {
         // all ranks copy data back to CPU in parallel
         checkCudaError(cudaMemcpy(patch.localU, patch.d_localU, patch.localSize, cudaMemcpyDeviceToHost));
 
-        // Note: brute-force full-synchronize approach for simplicity - optimize with point-to-point messages triggering next write
         for (int printRank = 0; printRank < numRanks; ++printRank) {
             MPI_Barrier(MPI_COMM_WORLD);    // make sure all ranks are in the same iteration
 
@@ -183,16 +176,8 @@ int main(int argc, char *argv[]) {
         stencil2D<<<ceilingDivide(patch.localNumCellsX - 2, 256), 256, 0, patch.haloStream>>>(
             patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, patch.localNumCellsY - 2, patch.localNumCellsY - 1, patch.localNumCellsX);
 
-        // start bulk compute
-        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
-            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
-
         // exchange halos
-        // Note: no host synchronization is needed before sending - the send is enqueued
-        //       behind the kernel that produces the layer, on the very same stream
-        // Note: the group call allows the matching send/ receive pairs to be resolved
-        //       together instead of deadlocking on each other
-        checkNcclError(ncclGroupStart());
+		checkNcclError(ncclGroupStart());
         if (rank > 0) {
             checkNcclError(ncclRecv(&patch.d_localUNew[0 * patch.localNumCellsX],
                 patch.localNumCellsX, ncclDouble, rank - 1, ncclComm, patch.haloStream));
@@ -207,9 +192,11 @@ int main(int argc, char *argv[]) {
         }
         checkNcclError(ncclGroupEnd());
 
+        // start bulk compute
+        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
+            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
+
         // synchronize both streams
-        // Note: these waits are only required because the buffer swap below happens on
-        //       the host - they are not communication waits
         checkCudaError(cudaStreamSynchronize(patch.haloStream));
         checkCudaError(cudaStreamSynchronize(patch.bulkStream));
 
@@ -245,33 +232,17 @@ int main(int argc, char *argv[]) {
 
     auto rankTotalTemperature = accumulateTemperature(patch.localU, patch.localNumCellsX, patch.localNumCellsY);
     std::cout << "  Total temperature on rank " << rank << " is " << rankTotalTemperature << std::endl;
-    // reduce the total temperature across GPUs
-    // Note: NCCL collectives operate on device buffers, so the host-side value has to be
-    //       staged on the GPU first - accumulating on the device instead would avoid this
-    double *d_temperature;
-    checkCudaError(cudaMalloc((void **)&d_temperature, 2 * sizeof(double)));
-    checkCudaError(cudaMemcpy(d_temperature, &rankTotalTemperature, sizeof(double), cudaMemcpyHostToDevice));
-
-    checkNcclError(ncclReduce(
-        d_temperature,          // send buffer
-        d_temperature + 1,      // receive buffer, only written on the root
-        1,                      // count
-        ncclDouble,             // datatype
-        ncclSum,                // operation
-        0,                      // root
-        ncclComm,               // communicator
-        patch.bulkStream));     // stream
-
-    // Note: as every NCCL operation, the reduction is stream-ordered
-    checkCudaError(cudaStreamSynchronize(patch.bulkStream));
-
     double totalTemperature = 0.0;
-    if (0 == rank) {
-        checkCudaError(cudaMemcpy(&totalTemperature, d_temperature + 1, sizeof(double), cudaMemcpyDeviceToHost));
+    MPI_Reduce(
+        &rankTotalTemperature,  // send buffer
+        &totalTemperature,      // receive buffer
+        1,                      // count
+        MPI_DOUBLE,             // datatype
+        MPI_SUM,                // operation
+        0,                      // root
+        MPI_COMM_WORLD);        // communicator
+    if (0 == rank)
         std::cout << "  Total temperature is " << totalTemperature << std::endl;
-    }
-
-    checkCudaError(cudaFree(d_temperature));
 
     // clean up
     checkCudaError(cudaStreamDestroy(patch.haloStream));

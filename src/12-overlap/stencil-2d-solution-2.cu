@@ -28,9 +28,6 @@ __global__ void stencil2D(const double *__restrict__ u, double *__restrict__ uNe
 }
 
 
-// number of threads per block used for the temperature accumulation
-// Note: fixed at compile time because the block-level reduction below uses a
-//       statically sized shared-memory buffer
 constexpr int accumulateBlockSize = 256;
 
 
@@ -38,13 +35,9 @@ __global__ void accumulateTemperature2D(const double *__restrict__ u,
                                         size_t localNumCellsX, size_t localNumCellsY,
                                         double *__restrict__ acc) {
 
-    // sum the inner cells of this patch only - the surrounding ring is either a halo layer
-    // owned by the neighbouring patch or a global boundary, exactly like the host-side
-    // accumulateTemperature, so no cell is counted twice
     const size_t numInnerX = localNumCellsX - 2;
     const size_t numInnerCells = numInnerX * (localNumCellsY - 2);
 
-    // grid-stride loop - one partial sum per thread, independent of the field size
     double sum = 0.0;
     for (size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
          idx < numInnerCells;
@@ -55,7 +48,6 @@ __global__ void accumulateTemperature2D(const double *__restrict__ u,
         sum += u[i0 + i1 * localNumCellsX];
     }
 
-    // tree reduction inside the block
     __shared__ double blockSums[accumulateBlockSize];
     blockSums[threadIdx.x] = sum;
     __syncthreads();
@@ -66,8 +58,6 @@ __global__ void accumulateTemperature2D(const double *__restrict__ u,
         __syncthreads();
     }
 
-    // combine the per-block results
-    // Note: double atomics require sm_60 or newer
     if (0 == threadIdx.x)
         atomicAdd(acc, blockSums[0]);
 }
@@ -267,11 +257,7 @@ int main(int argc, char *argv[]) {
     // print stats and diagnostic result
     if (0 == rank)
         printStats(end - start, numItTimed, globalNumCellsX * globalNumCellsY, sizeof(double) + sizeof(double), 7);
-
-    // accumulate the local temperature on the device
-    // Note: a CUDA-aware MPI takes device pointers in collectives just as in the halo
-    //       exchange above, so the field never has to be copied back to accumulate it
-    double *d_localTemperature;
+    
     double *d_totalTemperature;
     checkCudaError(cudaMalloc((void **)&d_localTemperature, sizeof(double)));
     checkCudaError(cudaMalloc((void **)&d_totalTemperature, sizeof(double)));
@@ -283,22 +269,18 @@ int main(int argc, char *argv[]) {
 
     accumulateTemperature2D<<<accumulateGridSize, accumulateBlockSize, 0, patch.bulkStream>>>(
         patch.d_localU, patch.localNumCellsX, patch.localNumCellsY, d_localTemperature);
-
-    // Note: unlike NCCL, MPI is not stream aware - the kernel producing the send buffer has
-    //       to be waited for explicitly before the collective may read it
     checkCudaError(cudaStreamSynchronize(patch.bulkStream));
 
     // reduce the total temperature across GPUs
     MPI_Reduce(
-        d_localTemperature,     // send buffer, on the device
-        d_totalTemperature,     // receive buffer, on the device, only written on the root
+        d_localTemperature,     // send device buffer
+        d_totalTemperature,     // receive deivce buffer
         1,                      // count
         MPI_DOUBLE,             // datatype
         MPI_SUM,                // operation
         0,                      // root
         MPI_COMM_WORLD);        // communicator
 
-    // a single 8-byte transfer replaces the full-field copy back
     if (0 == rank) {
         double temperature = 0.0;
         checkCudaError(cudaMemcpy(&temperature, d_totalTemperature, sizeof(double), cudaMemcpyDeviceToHost));
