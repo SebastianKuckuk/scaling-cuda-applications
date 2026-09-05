@@ -177,10 +177,6 @@ int main(int argc, char *argv[]) {
         stencil2D<<<ceilingDivide(patch.localNumCellsX - 2, 256), 256, 0, patch.haloStream>>>(
             patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, patch.localNumCellsY - 2, patch.localNumCellsY - 1, patch.localNumCellsX);
 
-        // start bulk compute
-        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
-            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
-
         // exchange halos
         checkNcclError(ncclGroupStart());
         if (rank > 0) {
@@ -196,6 +192,10 @@ int main(int argc, char *argv[]) {
                 patch.localNumCellsX, ncclDouble, rank + 1, ncclComm, patch.haloStream));
         }
         checkNcclError(ncclGroupEnd());
+
+        // start bulk compute
+        stencil2D<<<patch.gridSize, patch.blockSize, 0, patch.bulkStream>>>(
+            patch.d_localU, patch.d_localUNew, 1, patch.localNumCellsX - 1, 2, patch.localNumCellsY - 2, patch.localNumCellsX);
 
         // synchronize both streams
         checkCudaError(cudaStreamSynchronize(patch.haloStream));
