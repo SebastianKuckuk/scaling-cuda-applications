@@ -166,11 +166,11 @@ int main(int argc, char *argv[]) {
         stencil2D<<<TODO>>>(TODO);
         stencil2D<<<TODO>>>(TODO);
 
-        // start bulk compute
-        stencil2D<<<TODO>>>(TODO);
-
         // exchange halos using NCCL send/recv communication
         TODO
+
+        // start bulk compute
+        stencil2D<<<TODO>>>(TODO);
 
         // synchronize streams
         TODO
