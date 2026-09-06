@@ -19,8 +19,9 @@ It is followed by incremental revisions of the application to discuss and demons
 * [10-mpi-hw](./material/10-mpi-hw.ipynb) introduces MPI with a Hello World application.
 * [11-mpi](./material/11-mpi.ipynb) applies MPI to decompose the stencil across GPU-equipped nodes.
 * [12-overlap](./material/12-overlap.ipynb) overlaps MPI communication with GPU computation.
-* [13-nvshmem](./material/13-nvshmem.ipynb) implements communication using NVSHMEM.
-* [14-outlook](./material/14-outlook.ipynb) outlines next steps.
+* [13-nccl](./material/13-nccl.ipynb) implements communication using NCCL.
+* [14-nvshmem](./material/14-nvshmem.ipynb) implements communication using NVSHMEM.
+* [15-outlook](./material/15-outlook.ipynb) outlines next steps.
 
 ## Further Learning
 

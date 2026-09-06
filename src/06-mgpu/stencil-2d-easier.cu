@@ -85,6 +85,7 @@ int main(int argc, char *argv[]) {
     initTemperature(u, uNew, globalNumCellsX, globalNumCellsY);
 
     // prefetch to GPU
+    cudaMemLocation hostID{cudaMemLocationTypeHost, 0};
     for (int deviceIdx = 0; deviceIdx < numDevices; ++deviceIdx) {
         checkCudaError(cudaSetDevice(deviceIdx));
 
@@ -94,8 +95,10 @@ int main(int argc, char *argv[]) {
         auto endIdx = (patch.globalInnerEndY + 1) * globalNumCellsX;
         auto size = (endIdx - startIdx) * sizeof(double);
 
-        checkCudaError(cudaMemPrefetchAsync(u + startIdx, size, deviceIdx));
-        checkCudaError(cudaMemPrefetchAsync(uNew + startIdx, size, deviceIdx));
+        cudaMemLocation deviceID{cudaMemLocationTypeDevice, deviceIdx};    // one location per patch's device
+
+        checkCudaError(cudaMemPrefetchAsync(u + startIdx, size, deviceID, 0));
+        checkCudaError(cudaMemPrefetchAsync(uNew + startIdx, size, deviceID, 0));
     }
 
     // define print and work
@@ -156,7 +159,7 @@ int main(int argc, char *argv[]) {
     // print stats and diagnostic result
     printStats(end - start, numItTimed, globalNumCellsX * globalNumCellsY, sizeof(double) + sizeof(double), 7);
 
-    checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), cudaCpuDeviceId));
+    checkCudaError(cudaMemPrefetchAsync(u, globalNumCellsX * globalNumCellsY * sizeof(double), hostID, 0));
     auto totalTemperature = accumulateTemperature(u, globalNumCellsX, globalNumCellsY);
     std::cout << "  Total temperature is " << totalTemperature << std::endl;
 
